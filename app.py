@@ -534,8 +534,43 @@ async def edit_or_resend_main_menu(callback: CallbackQuery) -> None:
         await callback.message.edit_text(WELCOME_TEXT, reply_markup=menu_kb())
 
 
-def normalize_phone(raw: str) -> str:
-    return re.sub(r"\D", "", raw)
+THAI_BANK_PREFIX = {
+    "002": "ธนาคารกรุงเทพ",
+    "004": "ธนาคารกสิกรไทย",
+    "006": "ธนาคารกรุงไทย",
+    "011": "ธนาคารทหารไทยธนชาต",
+    "014": "ธนาคารไทยพาณิชย์",
+    "017": "ธนาคารซิตี้แบงก์",
+    "018": "ธนาคารซูมิโตโม",
+    "022": "ธนาคารซีไอเอ็มบีไทย",
+    "024": "ธนาคารยูโอบี",
+    "025": "ธนาคารกรุงศรีอยุธยา",
+    "030": "ธนาคารออมสิน",
+    "033": "ธนาคารอาคารสงเคราะห์",
+    "034": "ธนาคารเพื่อการเกษตรและสหกรณ์",
+    "067": "ธนาคารทิสโก้",
+    "069": "ธนาคารเกียรตินาคินภัทร",
+}
+
+def detect_bank_name(account_no: str) -> str:
+    digits = re.sub(r"\D", "", account_no)
+    if len(digits) >= 3:
+        return THAI_BANK_PREFIX.get(digits[:3], "")
+    return ""
+
+def is_valid_thai_phone(phone: str) -> bool:
+    digits = re.sub(r"\D", "", phone)
+    return bool(re.fullmatch(r"0(6|8|9)\d{8}", digits))
+
+def is_valid_name(text: str) -> bool:
+    text = text.strip()
+    if len(text) < 2:
+        return False
+    if re.search(r"\d", text):
+        return False
+    if re.search(r"[^\u0E00-\u0E7Fa-zA-Z\s\-\.]", text):
+        return False
+    return True
 
 
 def format_summary_lines(data: dict) -> list[str]:
@@ -615,18 +650,44 @@ def get_next_field_prompt(data: dict) -> str:
     )
 
 def validate_field(field_key: str, value: str) -> Optional[str]:
-    if not value.strip():
+    text = value.strip()
+    if not text:
         return "กรุณากรอกข้อมูลก่อนครับ"
+
     if field_key == "phone":
-        phone = normalize_phone(value)
-        if len(phone) < 9 or len(phone) > 10:
-            return "เบอร์โทรไม่ถูกต้องครับ กรุณาส่งเป็นตัวเลข 9-10 หลัก"
-    if field_key in {"customer_name", "account_name"} and len(value.strip()) < 2:
-        return "ข้อมูลสั้นเกินไปครับ กรุณากรอกใหม่"
-    if field_key in {"user_code", "bank_account"} and len(value.strip()) < 3:
-        return "ข้อมูลสั้นเกินไปครับ กรุณากรอกใหม่"
-    if field_key == "detail" and len(value.strip()) < 5:
-        return "รายละเอียดสั้นเกินไปครับ กรุณาพิมพ์เพิ่มอีกนิด"
+        if not is_valid_thai_phone(text):
+            return "กรุณากรอกเบอร์โทร 10 หลัก และต้องขึ้นต้นด้วย 06, 08 หรือ 09"
+
+    elif field_key == "customer_name":
+        if not is_valid_name(text):
+            return "กรุณากรอกชื่อ-นามสกุลจริง ห้ามมีตัวเลขหรืออักขระแปลก"
+
+    elif field_key == "account_name":
+        if len(text) < 3:
+            return "กรุณากรอกยูสเซอร์ที่ใช้สมัครอย่างน้อย 3 ตัว"
+        if " " in text:
+            return "ยูสเซอร์ที่ใช้สมัครไม่ควรมีช่องว่าง"
+
+    elif field_key == "user_code":
+        if len(text) < 3:
+            return "กรุณากรอก USER อย่างน้อย 3 ตัว"
+        if " " in text:
+            return "USER ไม่ควรมีช่องว่าง"
+
+    elif field_key == "bank_account":
+        digits = re.sub(r"\D", "", text)
+        if not digits.isdigit():
+            return "กรุณากรอกเลขบัญชีเป็นตัวเลขเท่านั้น"
+        if len(digits) < 10 or len(digits) > 12:
+            return "เลขบัญชีต้องมีประมาณ 10-12 หลัก"
+        bank_name = detect_bank_name(digits)
+        if not bank_name:
+            return "เลขบัญชีนี้ยังตรวจไม่พบธนาคาร กรุณาตรวจสอบอีกครั้ง"
+
+    elif field_key == "detail":
+        if len(text) < 8:
+            return "กรุณาอธิบายปัญหาเพิ่มอีกนิด"
+
     return None
 
 
@@ -739,6 +800,14 @@ async def cb_promo_detail(callback: CallbackQuery):
 
 @router.callback_query(F.data.startswith("admin:topic:"))
 async def cb_admin_topic(callback: CallbackQuery, state: FSMContext):
+    active_ticket = get_active_ticket_for_user(callback.from_user.id)
+    if active_ticket:
+        await callback.answer(
+            f"คุณมีเคสเปิดอยู่แล้ว #{active_ticket['id']}\nกรุณารอแอดมินหรือส่งข้อมูลเพิ่มในห้องนี้ได้เลย",
+            show_alert=True
+        )
+        return
+
     key = callback.data.split(":")[-1]
     topic = FORM_TEMPLATES.get(key)
     if not topic:
@@ -754,7 +823,10 @@ async def cb_admin_topic(callback: CallbackQuery, state: FSMContext):
         telegram_user_id=callback.from_user.id,
         telegram_full_name=callback.from_user.full_name or "",
         source_chat_id=callback.message.chat.id,
-)
+        invalid_count=0,
+        spam_count=0,
+        attachment_invalid_count=0,
+    )
     await state.set_state(SupportFlow.filling_form)
 
     data = await state.get_data()
@@ -781,12 +853,34 @@ async def support_fill_form(message: Message, state: FSMContext):
 
     field_key, label = fields[idx]
     raw_text = (message.text or "").strip()
+
     err = validate_field(field_key, raw_text)
     if err:
-        await message.answer(err)
+        bad = int(data.get("invalid_count", 0)) + 1
+        await state.update_data(invalid_count=bad)
+
+        if bad >= 3:
+            await state.clear()
+            await message.answer(
+                "คุณกรอกข้อมูลไม่ถูกต้องหลายครั้ง ระบบพากลับหน้าแรกแล้ว กรุณาเริ่มใหม่ครับ",
+                reply_markup=menu_kb(),
+            )
+            return
+
+        remain = 3 - bad
+        await message.answer(
+            f"{err}\n\nกรุณากรอกใหม่\nเหลือโอกาสอีก {remain} ครั้ง"
+        )
         return
 
+    await state.update_data(invalid_count=0)
+
     value = normalize_phone(raw_text) if field_key == "phone" else raw_text
+
+    if field_key == "bank_account":
+        bank_name = detect_bank_name(value)
+        await state.update_data(bank_name=bank_name)
+
     await state.update_data(**{field_key: value})
 
     idx += 1
@@ -847,11 +941,28 @@ async def support_wait_document(message: Message, state: FSMContext):
 async def support_wait_attachment_invalid(message: Message, state: FSMContext):
     data = await state.get_data()
     topic = FORM_TEMPLATES.get(data.get("topic_key", ""), {})
-    if topic.get("require_attachment"):
-        await message.answer("หัวข้อนี้ต้องแนบหลักฐานครับ\nกรุณาส่งเป็นรูปภาพหรือไฟล์เอกสาร")
-    else:
-        await message.answer("กรุณาส่งเป็นรูปภาพ/ไฟล์ หรือกดปุ่ม 'ข้ามไม่แนบหลักฐาน'")
 
+    bad = int(data.get("attachment_invalid_count", 0)) + 1
+    await state.update_data(attachment_invalid_count=bad)
+
+    if bad >= 3:
+        await state.clear()
+        await message.answer(
+            "คุณส่งข้อความซ้ำหลายครั้ง ระบบพากลับหน้าแรกแล้ว กรุณาเริ่มใหม่ครับ",
+            reply_markup=menu_kb(),
+        )
+        return
+
+    remain = 3 - bad
+
+    if topic.get("require_attachment"):
+        await message.answer(
+            f"กรุณาส่งเป็นรูปภาพหรือไฟล์เอกสารเท่านั้น\nเหลือโอกาสอีก {remain} ครั้ง"
+        )
+    else:
+        await message.answer(
+            f"กรุณาส่งเป็นรูปภาพ/ไฟล์ หรือกดปุ่ม 'ข้ามไม่แนบหลักฐาน'\nเหลือโอกาสอีก {remain} ครั้ง"
+        )
 
 async def finalize_admin_ticket(message: Message, state: FSMContext, bot: Bot):
     admin_group_id = get_admin_group_id()
@@ -866,15 +977,20 @@ async def finalize_admin_ticket(message: Message, state: FSMContext, bot: Bot):
     topic = FORM_TEMPLATES.get(data.get("topic_key", ""), {})
     topic_label = data.get("topic_label", "อื่นๆ")
 
+    owner_user_id = int(data.get("telegram_user_id") or message.from_user.id)
+    owner_username = data.get("telegram_username") or message.from_user.username
+    owner_full_name = data.get("telegram_full_name") or message.from_user.full_name
+    source_chat_id = int(data.get("source_chat_id") or message.chat.id)
+
     customer_name = (
         data.get("customer_name")
         or data.get("account_name")
-        or message.from_user.full_name
+        or owner_full_name
     )
 
     ticket_id = create_ticket(
-        user_id=message.from_user.id,
-        username=message.from_user.username,
+        user_id=owner_user_id,
+        username=owner_username,
         full_name=customer_name,
         category=topic_label,
     )
@@ -888,16 +1004,20 @@ async def finalize_admin_ticket(message: Message, state: FSMContext, bot: Bot):
     set_ticket_card_message_id(ticket_id, card.message_id)
     map_admin_message(ticket_id, card.message_id)
 
+    summary_text = admin_summary_text(ticket_id, data)
+    if data.get("bank_name"):
+        summary_text += f"\nธนาคารที่ตรวจพบ: {html.escape(data['bank_name'])}"
+
     summary = await bot.send_message(
         admin_group_id,
-        admin_summary_text(ticket_id, data),
+        summary_text,
     )
     map_admin_message(ticket_id, summary.message_id)
 
     if data.get("first_attachment_message_id"):
         copied = await bot.copy_message(
             chat_id=admin_group_id,
-            from_chat_id=message.chat.id,
+            from_chat_id=source_chat_id,
             message_id=data["first_attachment_message_id"],
         )
         map_admin_message(ticket_id, copied.message_id)
@@ -908,7 +1028,6 @@ async def finalize_admin_ticket(message: Message, state: FSMContext, bot: Bot):
         f"{reply_text}\n\nเลขที่เคส: #{ticket_id}",
         reply_markup=menu_kb(),
     )
-
 
 @router.callback_query(F.data.startswith("ticket:"))
 async def cb_ticket_action(callback: CallbackQuery, bot: Bot):
