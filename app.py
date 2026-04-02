@@ -843,7 +843,7 @@ async def cb_admin_topic(callback: CallbackQuery, state: FSMContext):
 @router.message(SupportFlow.filling_form, F.chat.type == ChatType.PRIVATE)
 async def support_fill_form(message: Message, state: FSMContext):
     data = await state.get_data()
-    topic = FORM_TEMPLATES.get(data["topic_key"], {})
+    topic = FORM_TEMPLATES.get(data.get("topic_key", ""), {})
     fields = topic.get("fields", [])
     idx = int(data.get("current_index", 0))
 
@@ -870,6 +870,13 @@ async def support_fill_form(message: Message, state: FSMContext):
         remain = 3 - bad
         await message.answer(
             f"{err}\n\nกรุณากรอกใหม่\nเหลือโอกาสอีก {remain} ครั้ง"
+        )
+
+        current_data = await state.get_data()
+        await message.answer(render_form_table(current_data), parse_mode="HTML")
+        await message.answer(
+            f"ข้อ {idx + 1}/{len(fields)} กรุณากรอก {label}",
+            reply_markup=ForceReply(selective=True)
         )
         return
 
