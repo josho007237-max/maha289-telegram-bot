@@ -20,6 +20,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Message,
+    ForceReply,
     WebAppInfo,
 )
 from aiogram.types.input_file import FSInputFile
@@ -126,6 +127,18 @@ FORM_TEMPLATES = {
         "allow_attachment": False,
         "require_attachment": False,
         "reply_text": "กรุณารอสักครู่ เราจะเร่งแก้ปัญหาให้ลูกค้าภายใน 5 นาที",
+    },
+    "change_profile": {
+        "label": "เปลี่ยนแปลงข้อมูล",
+        "fields": [
+            ("user_code", "USER"),
+            ("customer_name", "ชื่อ-นามสกุล"),
+            ("phone", "เบอร์"),
+            ("detail", "รายละเอียดที่ต้องการเปลี่ยน"),
+        ],
+        "allow_attachment": False,
+        "require_attachment": False,
+        "reply_text": "กรุณารอสักครู่ แอดมินจะรีบตรวจสอบการเปลี่ยนข้อมูลให้ลูกค้า",
     },
     "deposit_missing": {
         "label": "ฝากเงินไม่เข้า",
@@ -429,7 +442,7 @@ def admin_category_kb() -> InlineKeyboardMarkup:
                 InlineKeyboardButton(text="2 ยืนยันตัวตน", callback_data="admin:topic:verify_identity"),
             ],
             [
-                InlineKeyboardButton(text="3 เปลี่ยนแปลงข้อมูล", web_app=WebAppInfo(url=CHANGE_PROFILE_URL)),
+                InlineKeyboardButton(text="3 เปลี่ยนแปลงข้อมูล", callback_data="admin:topic:change_profile"),
                 InlineKeyboardButton(text="4 ฝากเงินไม่เข้า", callback_data="admin:topic:deposit_missing"),
             ],
             [
@@ -444,7 +457,6 @@ def admin_category_kb() -> InlineKeyboardMarkup:
             ],
         ]
     )
-
 
 def attachment_step_kb(required: bool) -> InlineKeyboardMarkup:
     rows = []
@@ -567,10 +579,26 @@ async def open_admin_menu_callback(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-def build_form_intro(topic_label: str) -> str:
+def build_line(label: str, value: str, width: int = 18) -> str:
+    safe_label = label[:width]
+    return f"{safe_label:<{width}} : {value}"
+
+
+def render_form_table(data: dict) -> str:
+    topic = FORM_TEMPLATES.get(data["topic_key"], {})
+    fields = topic.get("fields", [])
+    lines = []
+
+    for field_key, label in fields:
+        value = data.get(field_key, "........................")
+        lines.append(build_line(label, value))
+
+    body = "\n".join(lines)
+
     return (
-        f"หัวเรื่อง > เพื่อความรวดเร็วในการแก้ปัญหา\n\n"
-        f"หัวข้อ: {topic_label}"
+        f"หัวเรื่อง > เพื่อความรวดเร็วในการแก้ปัญหา\n"
+        f"หัวข้อ: {data['topic_label']}\n\n"
+        f"<pre>{html.escape(body)}</pre>"
     )
 
 
@@ -579,9 +607,12 @@ def get_next_field_prompt(data: dict) -> str:
     fields = topic.get("fields", [])
     idx = int(data.get("current_index", 0))
     total = len(fields)
-    field_key, label = fields[idx]
-    return f"{build_form_intro(data['topic_label'])}\n\nข้อ {idx + 1}/{total} กรุณากรอก {label}"
+    _, label = fields[idx]
 
+    return (
+        render_form_table(data)
+        + f"\n\nข้อ {idx + 1}/{total} กรุณากรอก {label}"
+    )
 
 def validate_field(field_key: str, value: str) -> Optional[str]:
     if not value.strip():
@@ -723,7 +754,15 @@ async def cb_admin_topic(callback: CallbackQuery, state: FSMContext):
         telegram_user_id=callback.from_user.id,
     )
     await state.set_state(SupportFlow.filling_form)
-    await callback.message.answer(get_next_field_prompt(await state.get_data()))
+
+    data = await state.get_data()
+    await callback.message.answer(render_form_table(data), parse_mode="HTML")
+
+    first_label = topic["fields"][0][1]
+    await callback.message.answer(
+        f"ข้อ 1/{len(topic['fields'])} กรุณากรอก {first_label}",
+        reply_markup=ForceReply(selective=True)
+    )
     await callback.answer()
 
 
@@ -747,12 +786,22 @@ async def support_fill_form(message: Message, state: FSMContext):
 
     value = normalize_phone(raw_text) if field_key == "phone" else raw_text
     await state.update_data(**{field_key: value})
+
     idx += 1
     await state.update_data(current_index=idx)
 
     if idx < len(fields):
-        await message.answer(get_next_field_prompt(await state.get_data()))
+        data = await state.get_data()
+        await message.answer(render_form_table(data), parse_mode="HTML")
+
+        next_label = fields[idx][1]
+        await message.answer(
+            f"ข้อ {idx + 1}/{len(fields)} กรุณากรอก {next_label}",
+            reply_markup=ForceReply(selective=True)
+        )
         return
+
+    await message.answer(render_form_table(await state.get_data()), parse_mode="HTML")
 
     if topic.get("allow_attachment"):
         await state.set_state(SupportFlow.waiting_attachment)
