@@ -752,7 +752,9 @@ async def cb_admin_topic(callback: CallbackQuery, state: FSMContext):
         current_index=0,
         telegram_username=callback.from_user.username or "",
         telegram_user_id=callback.from_user.id,
-    )
+        telegram_full_name=callback.from_user.full_name or "",
+        source_chat_id=callback.message.chat.id,
+)
     await state.set_state(SupportFlow.filling_form)
 
     data = await state.get_data()
@@ -818,22 +820,26 @@ async def support_fill_form(message: Message, state: FSMContext):
 async def cb_skip_attachment(callback: CallbackQuery, state: FSMContext):
     data = await state.get_data()
     topic = FORM_TEMPLATES.get(data.get("topic_key", ""), {})
+
     if topic.get("require_attachment"):
         await callback.answer("หัวข้อนี้ต้องแนบหลักฐานครับ", show_alert=True)
         return
+
+    await callback.answer("กำลังส่งเคสให้แอดมินครับ")
     await finalize_admin_ticket(callback.message, state, callback.bot)
-    await callback.answer()
 
 
 @router.message(SupportFlow.waiting_attachment, F.chat.type == ChatType.PRIVATE, F.photo)
 async def support_wait_photo(message: Message, state: FSMContext):
     await state.update_data(first_attachment_message_id=message.message_id)
+    await message.answer("รับรูปหลักฐานแล้ว กำลังส่งให้แอดมินครับ")
     await finalize_admin_ticket(message, state, message.bot)
 
 
 @router.message(SupportFlow.waiting_attachment, F.chat.type == ChatType.PRIVATE, F.document)
 async def support_wait_document(message: Message, state: FSMContext):
     await state.update_data(first_attachment_message_id=message.message_id)
+    await message.answer("รับไฟล์หลักฐานแล้ว กำลังส่งให้แอดมินครับ")
     await finalize_admin_ticket(message, state, message.bot)
 
 
